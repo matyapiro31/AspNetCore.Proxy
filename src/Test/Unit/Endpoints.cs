@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using AspNetCore.Proxy.Endpoints;
@@ -35,6 +36,32 @@ namespace AspNetCore.Proxy.Tests
 
             // Something like 1 in 100! (ish, since I am not reseeding, and since it is not an even distribution) chance this assert fails.
             Assert.NotEqual(firstDraw, secondDraw);
+        }
+
+        [Fact]
+        public void WeightedRoundRobin_DistributesProportionally()
+        {
+            // server-a weight=3, server-b weight=1 => 75% / 25%
+            var computer = WeightedRoundRobin.Of(("a", 3), ("b", 1));
+
+            var results = Enumerable.Range(0, 40).Select(_ => computer(null, null)).ToList();
+            var countA = results.Count(r => r == "a");
+            var countB = results.Count(r => r == "b");
+
+            Assert.Equal(30, countA);
+            Assert.Equal(10, countB);
+        }
+
+        [Fact]
+        public void WeightedRoundRobin_ThrowsOnZeroWeight()
+        {
+            Assert.Throws<ArgumentException>(() => WeightedRoundRobin.Of(("a", 0)));
+        }
+
+        [Fact]
+        public void WeightedRoundRobin_ThrowsOnEmptyInput()
+        {
+            Assert.Throws<ArgumentException>(() => WeightedRoundRobin.Of());
         }
     }
 }
