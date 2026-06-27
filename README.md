@@ -27,7 +27,7 @@ dotnet test src/Test/AspNetCore.Proxy.Tests.csproj
 
 ### Compatibility
 
-.NET Standard 2.0, .NET Core 3.0, .NET Core 5.0 and .NET Core 6.0.
+.NET Standard 2.0, .NET 6.0, .NET 7.0, and .NET 8.0.
 
 ### Examples
 
@@ -238,6 +238,128 @@ public class MyController : Controller
     }
 }
 ```
+
+---
+
+## Advanced: API Distribution (Per-Route Load Balancing)
+
+Route each API path prefix to its own cluster of backend servers.
+
+```csharp
+services.AddProxies();
+
+// Simple: dictionary of route → server list (round-robin)
+app.UseApiDistribution(new Dictionary<string, string[]>
+{
+    { "api/users/{**rest}",  new[] { "http://users-1:5000",  "http://users-2:5000"  } },
+    { "api/orders/{**rest}", new[] { "http://orders-1:5000", "http://orders-2:5000" } },
+});
+
+// Detailed: per-route strategy and options
+app.UseApiDistribution(new[]
+{
+    new ApiRouteConfig(
+        route:     "api/search/{**rest}",
+        endpoints: new[] { "http://search-1:5000", "http://search-2:5000", "http://search-3:5000" },
+        strategy:  DistributionStrategy.Random),
+
+    new ApiRouteConfig(
+        route:     "api/heavy/{**rest}",
+        endpoints: new[] { "http://heavy-1:5000", "http://heavy-2:5000" },
+        strategy:  DistributionStrategy.RoundRobin),
+});
+```
+
+### Weighted Round Robin
+
+When some servers have more capacity, assign higher weights.
+
+```csharp
+// 3/4 of traffic → big-server, 1/4 → small-server
+proxies.Map("api/data/{**rest}", proxy => proxy.UseHttp(
+    WeightedRoundRobin.Of(
+        ("http://big-server:5000",   3),
+        ("http://small-server:5000", 1)
+    )
+));
+```
+
+---
+
+## Advanced: Asset / Data File Server Proxy
+
+Proxy static assets and data files with per-extension backend routing,
+cache-control header override, CORS injection, and Range passthrough.
+
+```csharp
+app.UseAssetProxy(
+    routePrefix: "assets/{**path}",
+    rules: new[]
+    {
+        // Images → CDN cluster
+        new AssetRouteRule(
+            new[] { "http://cdn-1:8080", "http://cdn-2:8080" },
+            ".png", ".jpg", ".gif", ".svg", ".webp"),
+
+        // JSON / XML data → data servers
+        new AssetRouteRule(
+            new[] { "http://data-1:5000", "http://data-2:5000" },
+            ".json", ".xml"),
+
+        // Fonts → dedicated font server
+        new AssetRouteRule(
+            new[] { "http://font-server:8080" },
+            ".woff", ".woff2", ".ttf"),
+    },
+    options: new AssetProxyOptions
+    {
+        CacheControlOverride      = "public, max-age=86400",
+        CorsOrigin                = "*",
+        ForwardRangeHeaders       = true,   // large file partial content
+        ForwardConditionalHeaders = true,   // ETag / 304 support
+        FallbackEndpoint          = "http://default-server:5000",
+    }
+);
+```
+
+---
+
+## Advanced: Resumable Download Proxy
+
+Transparently supports pause/resume downloads even when the upstream server
+**does not** implement HTTP Range requests.
+
+- If upstream returns `206 Partial Content` → forwarded as-is.
+- If upstream returns `200 OK` → proxy buffers the full body, slices the
+  requested byte range, and returns `206 Partial Content` to the client.
+- Subsequent range requests for the same URL are served from an optional
+  in-process cache, avoiding repeated upstream downloads.
+
+```csharp
+app.UseResumableProxy(
+    routePrefix:      "downloads/{**path}",
+    upstreamBaseUrls: new[] { "http://file-server-1:8080", "http://file-server-2:8080" },
+    options: new ResumableProxyOptions
+    {
+        MaxCacheSizeBytes        = 500 * 1024 * 1024,  // total cache: 500 MiB
+        MaxCachableFileSizeBytes =  50 * 1024 * 1024,  // per-file limit: 50 MiB
+        CacheTtl                 = TimeSpan.FromMinutes(30),
+        CorsOrigin               = "*",
+    }
+);
+```
+
+**Behavior summary:**
+
+| Upstream response | Proxy action |
+|---|---|
+| `206 Partial Content` | Forward as-is |
+| `200 OK` (no Range support) | Buffer → slice → return `206` |
+| Cache hit (same URL) | Serve from cache, no upstream call |
+| Range out of bounds | `416 Range Not Satisfiable` |
+| Upstream error | `502 Bad Gateway` |
+
+---
 
 ## License
 
